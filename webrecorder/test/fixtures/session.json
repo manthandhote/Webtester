@@ -106,6 +106,27 @@
           { "score": 10, "engine": "css", "css": "#dashboard > table:nth-of-type(1)", "xpath": null }
         ]
       }
+    },
+    {
+      "type": "click",
+      "timestamp": 1700000009000,
+      "selector": {
+        "candidates": [
+          { "score": 100, "engine": "testid", "attr": "data-testid", "value": "download-report", "css": "[data-testid=\"download-report\"]", "xpath": "//*[@data-testid=\"download-report\"]" },
+          { "score": 10, "engine": "css", "css": "#dashboard > button:nth-of-type(1)", "xpath": null }
+        ]
+      }
+    },
+    {
+      "type": "download",
+      "suggestedFilename": "shipments-report.csv",
+      "savedPath": "downloads/1700000009100-shipments-report.csv",
+      "headers": ["AWB", "Status", "Weight"],
+      "rows": [
+        ["1234567890", "Delivered", "2.5kg"],
+        ["9876543210", "In Transit", "1.2kg"]
+      ],
+      "timestamp": 1700000009100
     }
   ]
 }

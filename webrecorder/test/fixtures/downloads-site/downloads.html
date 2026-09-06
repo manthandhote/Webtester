@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Reports</title></head>
+<body>
+  <button id="download-csv" data-testid="download-report" onclick="downloadFile('/shipments-report.csv')">Download CSV Report</button>
+  <button id="download-xlsx" data-testid="download-report-xlsx" onclick="downloadFile('/shipments-report.xlsx')">Download Excel Report</button>
+  <script>
+    function downloadFile(url) {
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = url.split('/').pop();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  </script>
+</body>
+</html>

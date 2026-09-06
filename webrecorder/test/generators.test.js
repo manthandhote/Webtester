@@ -53,6 +53,18 @@ check('playwright: assertTable asserts row count and iterates cells', () => {
   assert.match(pw, /await expect\(page\.locator\("#results-table"\)\.locator\("tbody tr"\)\)\.toHaveCount\(tableRows\d+\.length\);/);
   assert.match(pw, /expect\(cells\[c\]\.trim\(\)\)\.toBe\(tableRows\d+\[r\]\[c\]\);/);
 });
+check('playwright: download is paired with its triggering click via Promise.all', () => {
+  assert.match(pw, /const \[download\d+\] = await Promise\.all\(\[/);
+  assert.match(pw, /page\.waitForEvent\('download'\),/);
+  assert.match(pw, /page\.getByTestId\("download-report"\)\.click\(\),/);
+  assert.match(pw, /expect\(download\d+\.suggestedFilename\(\)\)\.toBe\("shipments-report\.csv"\);/);
+  assert.match(pw, /expect\(downloadData\d+\.headers\)\.toEqual\(\["AWB","Status","Weight"\]\);/);
+  assert.match(pw, /expect\(downloadData\d+\.rows\)\.toEqual\(\[\["1234567890","Delivered","2\.5kg"\],\["9876543210","In Transit","1\.2kg"\]\]\);/);
+});
+check('playwright: emits the readTabularDownload helper exactly once, only when needed', () => {
+  const matches = pw.match(/async function readTabularDownload/g) || [];
+  assert.strictEqual(matches.length, 1);
+});
 
 // ---- Selenium ----
 const py = generators.seleniumPython(session, opts);
@@ -88,6 +100,21 @@ check('selenium: assertTable asserts row count and iterates cells', () => {
   assert.match(py, /row_elements_\d+ = table_el_\d+\.find_elements\(By\.CSS_SELECTOR, "tbody tr"\)/);
   assert.match(py, /assert cell_texts == expected_rows_\d+\[r\]/);
 });
+check('selenium: download uses a temp download dir, polls for the new file, then reads it', () => {
+  assert.match(py, /options\.add_experimental_option\("prefs", \{"download\.default_directory": download_dir, "download\.prompt_for_download": False\}\)/);
+  assert.match(py, /before_files_\d+ = set\(os\.listdir\(driver\.download_dir\)\)/);
+  assert.match(py, /el = wait_visible\(driver, By\.CSS_SELECTOR, "\[data-testid=\\"download-report\\"\]"\)/);
+  assert.match(py, /downloaded_path_\d+ = wait_for_new_file\(driver\.download_dir, before_files_\d+\)/);
+  assert.match(py, /assert os\.path\.basename\(downloaded_path_\d+\) == "shipments-report\.csv"/);
+  assert.match(py, /assert table_data_\d+\["headers"\] == \["AWB","Status","Weight"\]/);
+  assert.match(py, /assert table_data_\d+\["rows"\] == \[\["1234567890","Delivered","2\.5kg"\],\["9876543210","In Transit","1\.2kg"\]\]/);
+});
+check('selenium: does not add download machinery when no session has downloads', () => {
+  const noDownloadSession = { ...session, actions: session.actions.filter((a) => a.type !== 'download') };
+  const pyNoDownload = generators.seleniumPython(noDownloadSession, opts);
+  assert.doesNotMatch(pyNoDownload, /download_dir/);
+  assert.doesNotMatch(pyNoDownload, /import os/);
+});
 
 // ---- JSON suite ----
 const suite = JSON.parse(generators.jsonSuite(session, opts));
@@ -102,9 +129,9 @@ check('json: keeps both implicit and explicit navigations, flagged accordingly',
   assert.deepStrictEqual(navSteps[0], { type: 'navigate', url: 'https://example.com/dashboard', implicit: true });
   assert.deepStrictEqual(navSteps[1], { type: 'navigate', url: 'https://example.com/settings', implicit: false });
 });
-check('json: each non-navigate step keeps primary + up to 3 fallbacks', () => {
+check('json: each element-based step keeps primary + up to 3 fallbacks', () => {
   for (const step of suite.steps) {
-    if (step.type === 'navigate') continue;
+    if (step.type === 'navigate' || step.type === 'download') continue;
     assert.ok(step.primary, `step ${step.type} missing primary`);
     assert.ok(Array.isArray(step.fallbacks));
     assert.ok(step.fallbacks.length <= 3);
@@ -122,6 +149,15 @@ check('json: assertTable step keys rows by header', () => {
     { AWB: '9876543210', Status: 'In Transit' },
   ]);
   assert.strictEqual(tableStep.primary.engine, 'id');
+});
+check('json: download step has no selector but keys rows by header', () => {
+  const downloadStep = suite.steps.find((s) => s.type === 'download');
+  assert.strictEqual(downloadStep.suggestedFilename, 'shipments-report.csv');
+  assert.strictEqual(downloadStep.primary, undefined);
+  assert.deepStrictEqual(downloadStep.rows, [
+    { AWB: '1234567890', Status: 'Delivered', Weight: '2.5kg' },
+    { AWB: '9876543210', Status: 'In Transit', Weight: '1.2kg' },
+  ]);
 });
 
 console.log('\nAll generator tests passed.');
