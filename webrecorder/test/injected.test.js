@@ -67,6 +67,33 @@ async function main() {
   );
   console.log('ok - a page with :r1:-style React ids does not produce #\\:r1\\: selectors');
 
+  // --- Ctrl+click on a table cell in assert mode captures the whole table ---
+  const tableHtml =
+    '<html><body><table id="results-table">' +
+    '<thead><tr><th>AWB</th><th>Status</th></tr></thead>' +
+    '<tbody>' +
+    '<tr><td>1234567890</td><td>Delivered</td></tr>' +
+    '<tr><td>9876543210</td><td>In Transit</td></tr>' +
+    '</tbody></table></body></html>';
+  await page.goto('data:text/html,' + encodeURIComponent(tableHtml));
+  await page.waitForTimeout(150);
+
+  await page.keyboard.press('F8'); // enable assert mode
+  const beforeTableCount = actions.length;
+  await page.locator('#results-table td').first().click({ modifiers: ['Control'] });
+  await page.waitForTimeout(50);
+
+  const tableActions = actions.slice(beforeTableCount).filter((a) => a.type === 'assertTable');
+  assert.strictEqual(tableActions.length, 1, 'Ctrl+click in assert mode should record exactly one assertTable action');
+  const tableAction = tableActions[0];
+  assert.deepStrictEqual(tableAction.headers, ['AWB', 'Status']);
+  assert.deepStrictEqual(tableAction.rows, [
+    ['1234567890', 'Delivered'],
+    ['9876543210', 'In Transit'],
+  ]);
+  assert.strictEqual(tableAction.selector.candidates[0].css, '#results-table');
+  console.log('ok - Ctrl+click on a table cell in assert mode captures the whole table');
+
   await browser.close();
   console.log('\nAll injected.js behavior tests passed.');
 }

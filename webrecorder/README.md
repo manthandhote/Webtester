@@ -43,6 +43,14 @@ While on, clicks don't perform the click — they record an assertion
 instead:
 
 - `Alt`+click a field → assert its value
+- `Ctrl`+click any cell/row inside a table (or a table-like container) →
+  assert the **whole table's contents**. This walks the nearest `<table>`
+  (or, if there isn't one, the clicked container's direct children as
+  rows/columns), records every row's cell text, and ties it to the
+  table's own selector. Use this for things like an AWB search result
+  grid: type the barcode, click Search, wait for the results to render,
+  then `Ctrl`+click a cell in the table to snapshot the whole result set
+  into the test.
 - click an element with text → assert its text
 - click anything else → assert it's visible
 

@@ -90,6 +90,22 @@
           { "score": 10, "engine": "css", "css": "#dashboard > div:nth-of-type(2) > span:nth-of-type(1)", "xpath": null }
         ]
       }
+    },
+    {
+      "type": "assertTable",
+      "native": true,
+      "headers": ["AWB", "Status"],
+      "rows": [
+        ["1234567890", "Delivered"],
+        ["9876543210", "In Transit"]
+      ],
+      "timestamp": 1700000008000,
+      "selector": {
+        "candidates": [
+          { "score": 90, "engine": "id", "value": "results-table", "css": "#results-table", "xpath": "//*[@id=\"results-table\"]" },
+          { "score": 10, "engine": "css", "css": "#dashboard > table:nth-of-type(1)", "xpath": null }
+        ]
+      }
     }
   ]
 }

@@ -410,6 +410,7 @@
     if (assertMode) {
       e.preventDefault();
       e.stopPropagation();
+      if (e.ctrlKey && recordTableAssertion(target)) return;
       recordAssertion(target, e.altKey);
       return;
     }
@@ -503,6 +504,68 @@
 
     emitAction({ type: 'press', selector: buildSelectorInfo(target), key: mapped, timestamp: Date.now() });
   }, true);
+
+  function findTableLikeContainer(el) {
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'table') return { root: el, native: true };
+    var closestTable = el.closest ? el.closest('table') : null;
+    if (closestTable) return { root: closestTable, native: true };
+    var childTable = el.querySelector ? el.querySelector('table') : null;
+    if (childTable) return { root: childTable, native: true };
+    if (el.children && el.children.length > 1) return { root: el, native: false };
+    return null;
+  }
+
+  function cellText(el) {
+    return (el.textContent || '').trim().replace(/\s+/g, ' ');
+  }
+
+  function extractTableData(root, native) {
+    var headers = [];
+    var rowEls = [];
+
+    if (native) {
+      var headerCells = root.querySelectorAll('thead th');
+      var firstRow = root.querySelector('tr');
+      if (headerCells.length === 0 && firstRow) {
+        headerCells = firstRow.querySelectorAll('th');
+      }
+      headers = Array.prototype.map.call(headerCells, cellText);
+
+      var bodyRows = root.querySelectorAll('tbody tr');
+      if (bodyRows.length === 0) {
+        bodyRows = root.querySelectorAll('tr');
+        if (headers.length > 0 && bodyRows.length > 0 && bodyRows[0].querySelector('th')) {
+          bodyRows = Array.prototype.slice.call(bodyRows, 1);
+        }
+      }
+      rowEls = Array.prototype.slice.call(bodyRows);
+    } else {
+      rowEls = Array.prototype.slice.call(root.children);
+    }
+
+    var rows = rowEls.map(function (rowEl) {
+      var cellEls = native ? rowEl.querySelectorAll('td, th') : rowEl.children;
+      return Array.prototype.map.call(cellEls, cellText);
+    });
+
+    return { headers: headers, rows: rows };
+  }
+
+  function recordTableAssertion(target) {
+    var tableInfo = findTableLikeContainer(target);
+    if (!tableInfo) return false;
+    var data = extractTableData(tableInfo.root, tableInfo.native);
+    emitAction({
+      type: 'assertTable',
+      selector: buildSelectorInfo(tableInfo.root),
+      native: tableInfo.native,
+      headers: data.headers,
+      rows: data.rows,
+      timestamp: Date.now(),
+    });
+    return true;
+  }
 
   function recordAssertion(el, altKey) {
     if (altKey && isTextEntryField(el)) {

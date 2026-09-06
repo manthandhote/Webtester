@@ -48,6 +48,11 @@ check('playwright: assertText avoids the text-engine trap (uses css fallback, no
   assert.match(pw, /await expect\(page\.locator\("#dashboard > div:nth-of-type\(2\) > span:nth-of-type\(1\)"\)\)\.toContainText\("Welcome, Alice!"\);/);
   assert.doesNotMatch(pw, /getByText\("Welcome, Alice!"/);
 });
+check('playwright: assertTable asserts row count and iterates cells', () => {
+  assert.match(pw, /const tableRows\d+ = \[\["1234567890","Delivered"\],\["9876543210","In Transit"\]\];/);
+  assert.match(pw, /await expect\(page\.locator\("#results-table"\)\.locator\("tbody tr"\)\)\.toHaveCount\(tableRows\d+\.length\);/);
+  assert.match(pw, /expect\(cells\[c\]\.trim\(\)\)\.toBe\(tableRows\d+\[r\]\[c\]\);/);
+});
 
 // ---- Selenium ----
 const py = generators.seleniumPython(session, opts);
@@ -77,6 +82,12 @@ check('selenium: assertText avoids the text-engine trap (falls back to css candi
   assert.match(py, /el = wait_visible\(driver, By\.CSS_SELECTOR, "#dashboard > div:nth-of-type\(2\) > span:nth-of-type\(1\)"\)/);
   assert.match(py, /assert "Welcome, Alice!" in el\.text/);
 });
+check('selenium: assertTable asserts row count and iterates cells', () => {
+  assert.match(py, /table_el_\d+ = wait_visible\(driver, By\.CSS_SELECTOR, "#results-table"\)/);
+  assert.match(py, /expected_rows_\d+ = \[\["1234567890","Delivered"\],\["9876543210","In Transit"\]\]/);
+  assert.match(py, /row_elements_\d+ = table_el_\d+\.find_elements\(By\.CSS_SELECTOR, "tbody tr"\)/);
+  assert.match(py, /assert cell_texts == expected_rows_\d+\[r\]/);
+});
 
 // ---- JSON suite ----
 const suite = JSON.parse(generators.jsonSuite(session, opts));
@@ -102,6 +113,14 @@ check('json: assertText step promotes non-text candidate to primary', () => {
   const assertStep = suite.steps.find((s) => s.type === 'assertText');
   assert.strictEqual(assertStep.primary.engine, 'css');
   assert.strictEqual(assertStep.text, 'Welcome, Alice!');
+});
+check('json: assertTable step keys rows by header', () => {
+  const tableStep = suite.steps.find((s) => s.type === 'assertTable');
+  assert.deepStrictEqual(tableStep.rows, [
+    { AWB: '1234567890', Status: 'Delivered' },
+    { AWB: '9876543210', Status: 'In Transit' },
+  ]);
+  assert.strictEqual(tableStep.primary.engine, 'id');
 });
 
 console.log('\nAll generator tests passed.');

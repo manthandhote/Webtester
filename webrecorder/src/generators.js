@@ -46,7 +46,7 @@ function playwrightLocator(candidate) {
   }
 }
 
-function playwrightStep(action) {
+function playwrightStep(action, index) {
   const i = '  ';
   const loc = () => playwrightLocator(topCandidate(action.selector));
   switch (action.type) {
@@ -76,6 +76,21 @@ function playwrightStep(action) {
     }
     case 'assertVisible':
       return [`${i}await expect(${loc()}).toBeVisible();`];
+    case 'assertTable': {
+      const rowSel = action.native ? 'tbody tr' : ':scope > *';
+      const cellSel = action.native ? 'td, th' : ':scope > *';
+      const varName = `tableRows${index}`;
+      return [
+        `${i}const ${varName} = ${jsStr(action.rows)};`,
+        `${i}await expect(${loc()}.locator(${jsStr(rowSel)})).toHaveCount(${varName}.length);`,
+        `${i}for (let r = 0; r < ${varName}.length; r++) {`,
+        `${i}  const cells = await ${loc()}.locator(${jsStr(rowSel)}).nth(r).locator(${jsStr(cellSel)}).allTextContents();`,
+        `${i}  for (let c = 0; c < ${varName}[r].length; c++) {`,
+        `${i}    expect(cells[c].trim()).toBe(${varName}[r][c]);`,
+        `${i}  }`,
+        `${i}}`,
+      ];
+    }
     default:
       return [`${i}// unsupported action type: ${action.type}`];
   }
@@ -87,9 +102,9 @@ function playwright(session, { testName } = {}) {
   lines.push('');
   lines.push(`test(${jsStr(testName || 'recorded session')}, async ({ page }) => {`);
   lines.push(`  await page.goto(${jsStr(session.startUrl)});`);
-  for (const action of session.actions) {
-    lines.push(...playwrightStep(action));
-  }
+  session.actions.forEach((action, index) => {
+    lines.push(...playwrightStep(action, index));
+  });
   lines.push('});');
   lines.push('');
   return lines.join('\n');
@@ -121,7 +136,7 @@ function toPyFunctionName(name) {
   return slug.startsWith('test_') ? slug : `test_${slug}`;
 }
 
-function seleniumStep(action) {
+function seleniumStep(action, index) {
   const i = '    ';
   const lines = [];
 
@@ -187,6 +202,19 @@ function seleniumStep(action) {
       lines.push(`${i}el = wait_visible(driver, ${by}, ${pyStr(value)})`);
       lines.push(`${i}assert el.is_displayed()`);
       break;
+    case 'assertTable': {
+      const rowSel = action.native ? 'tbody tr' : ':scope > *';
+      const cellSel = action.native ? 'td, th' : ':scope > *';
+      lines.push(`${i}table_el_${index} = wait_visible(driver, ${by}, ${pyStr(value)})`);
+      lines.push(`${i}expected_rows_${index} = ${pyStr(action.rows)}`);
+      lines.push(`${i}row_elements_${index} = table_el_${index}.find_elements(By.CSS_SELECTOR, ${pyStr(rowSel)})`);
+      lines.push(`${i}assert len(row_elements_${index}) == len(expected_rows_${index})`);
+      lines.push(`${i}for r, row_el in enumerate(row_elements_${index}):`);
+      lines.push(`${i}    cells = row_el.find_elements(By.CSS_SELECTOR, ${pyStr(cellSel)})`);
+      lines.push(`${i}    cell_texts = [c.text.strip() for c in cells]`);
+      lines.push(`${i}    assert cell_texts == expected_rows_${index}[r]`);
+      break;
+    }
     default:
       lines.push(`${i}# unsupported action type: ${action.type}`);
   }
@@ -220,9 +248,9 @@ function seleniumPython(session, { testName } = {}) {
   lines.push('');
   lines.push(`def ${toPyFunctionName(testName)}(driver):`);
   lines.push(`    driver.get(${pyStr(session.startUrl)})`);
-  for (const action of session.actions) {
-    lines.push(...seleniumStep(action));
-  }
+  session.actions.forEach((action, index) => {
+    lines.push(...seleniumStep(action, index));
+  });
   lines.push('');
   return lines.join('\n');
 }
@@ -250,6 +278,16 @@ function toStep(action) {
   if (action.type === 'press') step.key = action.key;
   if (action.type === 'assertValue') step.value = action.value;
   if (action.type === 'assertText') step.text = action.text;
+  if (action.type === 'assertTable') {
+    step.rows = action.rows.map((row) => {
+      const keyed = {};
+      row.forEach((cellValue, colIndex) => {
+        const key = (action.headers && action.headers[colIndex]) || `col_${colIndex}`;
+        keyed[key] = cellValue;
+      });
+      return keyed;
+    });
+  }
 
   return step;
 }
