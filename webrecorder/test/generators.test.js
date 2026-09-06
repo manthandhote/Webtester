@@ -96,10 +96,11 @@ check('json: has name/startUrl/recordedAt/steps', () => {
   assert.strictEqual(suite.startUrl, 'https://example.com/login');
   assert.ok(Array.isArray(suite.steps));
 });
-check('json: drops implicit navigation, keeps explicit one', () => {
+check('json: keeps both implicit and explicit navigations, flagged accordingly', () => {
   const navSteps = suite.steps.filter((s) => s.type === 'navigate');
-  assert.strictEqual(navSteps.length, 1);
-  assert.strictEqual(navSteps[0].url, 'https://example.com/settings');
+  assert.strictEqual(navSteps.length, 2);
+  assert.deepStrictEqual(navSteps[0], { type: 'navigate', url: 'https://example.com/dashboard', implicit: true });
+  assert.deepStrictEqual(navSteps[1], { type: 'navigate', url: 'https://example.com/settings', implicit: false });
 });
 check('json: each non-navigate step keeps primary + up to 3 fallbacks', () => {
   for (const step of suite.steps) {

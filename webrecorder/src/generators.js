@@ -259,7 +259,7 @@ function seleniumPython(session, { testName } = {}) {
 
 function toStep(action) {
   if (action.type === 'navigate') {
-    return { type: 'navigate', url: action.url };
+    return { type: 'navigate', url: action.url, implicit: !!action.implicit };
   }
 
   const candidates = orderedCandidatesForAssertion(action.selector);
@@ -293,11 +293,7 @@ function toStep(action) {
 }
 
 function jsonSuite(session, { testName } = {}) {
-  const steps = [];
-  for (const action of session.actions) {
-    if (action.type === 'navigate' && action.implicit) continue;
-    steps.push(toStep(action));
-  }
+  const steps = session.actions.map(toStep);
   const suite = {
     name: testName || 'recorded session',
     startUrl: session.startUrl,
