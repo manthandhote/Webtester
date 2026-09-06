@@ -35,8 +35,14 @@ the bottom-right corner. Interact with the page normally:
 - Typing into a field is buffered into a single `fill` action (flushed on
   blur, `change`, Enter, or when you move focus elsewhere) — not one
   action per keystroke.
-- Navigations caused by your interactions (e.g. a form submit) are
-  detected automatically and marked `implicit`.
+- Navigations caused by your interactions are detected automatically and
+  marked `implicit`, with a check for the resulting URL generated for
+  free (`toHaveURL` in Playwright, `EC.url_to_be` in Selenium). This is
+  generic — it fires on *any* click or key press followed by a
+  navigation within 3 seconds, not just navbar links. A `<button
+  onclick="...">` that redirects, a form submit, or a client-side route
+  change (`history.pushState`) are all caught the same way as a plain
+  `<a href>`.
 
 **Assert mode** — press `F8` or click "Assert" in the panel to toggle it.
 While on, clicks don't perform the click — they record an assertion
@@ -117,4 +123,5 @@ the generators never touch a browser.
 ```sh
 node test/generators.test.js   # generator output sanity checks, no browser
 node test/injected.test.js     # behavioral checks against a real headless Chromium
+node test/recorder.test.js     # navigate-detection checks against a real headless Chromium
 ```
