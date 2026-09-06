@@ -1,0 +1,16 @@
+{
+  "name": "webrecorder",
+  "version": "1.0.0",
+  "description": "Record browser actions and compile them into Playwright/Selenium test cases",
+  "main": "src/cli.js",
+  "bin": {
+    "webrecorder": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node test/generators.test.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}

@@ -1,0 +1,107 @@
+// Verifies all three generators produce sane output from the fixture, with no browser involved.
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const generators = require('../src/generators');
+
+const session = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'session.json'), 'utf8'));
+const opts = { testName: 'login flow' };
+
+function check(label, fn) {
+  try {
+    fn();
+    console.log(`ok - ${label}`);
+  } catch (err) {
+    console.error(`FAIL - ${label}`);
+    throw err;
+  }
+}
+
+// ---- Playwright ----
+const pw = generators.playwright(session, opts);
+check('playwright: imports test/expect', () => {
+  assert.match(pw, /import \{ test, expect \} from '@playwright\/test';/);
+});
+check('playwright: starts with goto to startUrl', () => {
+  assert.match(pw, /await page\.goto\("https:\/\/example\.com\/login"\);/);
+});
+check('playwright: fill uses top-ranked testid locator', () => {
+  assert.match(pw, /await page\.getByTestId\("username-input"\)\.fill\("alice"\);/);
+});
+check('playwright: check uses id locator', () => {
+  assert.match(pw, /await page\.locator\("#remember-me"\)\.check\(\);/);
+});
+check('playwright: click uses testid locator', () => {
+  assert.match(pw, /await page\.getByTestId\("login-submit"\)\.click\(\);/);
+});
+check('playwright: implicit navigate becomes toHaveURL', () => {
+  assert.match(pw, /await expect\(page\)\.toHaveURL\("https:\/\/example\.com\/dashboard"\);/);
+  assert.doesNotMatch(pw, /page\.goto\("https:\/\/example\.com\/dashboard"\)/);
+});
+check('playwright: explicit navigate becomes goto', () => {
+  assert.match(pw, /await page\.goto\("https:\/\/example\.com\/settings"\);/);
+});
+check('playwright: selectOption uses label', () => {
+  assert.match(pw, /await page\.locator\("#theme-select"\)\.selectOption\(\{ label: "Dark Mode" \}\);/);
+});
+check('playwright: assertText avoids the text-engine trap (uses css fallback, not getByText)', () => {
+  assert.match(pw, /await expect\(page\.locator\("#dashboard > div:nth-of-type\(2\) > span:nth-of-type\(1\)"\)\)\.toContainText\("Welcome, Alice!"\);/);
+  assert.doesNotMatch(pw, /getByText\("Welcome, Alice!"/);
+});
+
+// ---- Selenium ----
+const py = generators.seleniumPython(session, opts);
+check('selenium: defines driver fixture and wait helpers', () => {
+  assert.match(py, /def driver\(\):/);
+  assert.match(py, /def wait_visible\(/);
+  assert.match(py, /def wait_for\(/);
+});
+check('selenium: every interaction goes through an explicit wait', () => {
+  const bodyLines = py.split('\n').filter((l) => l.trim().startsWith('el.') || l.includes('find_element'));
+  assert.ok(!py.includes('find_element('), 'must not call find_element directly');
+});
+check('selenium: fill uses top candidate with a css', () => {
+  assert.match(py, /el = wait_visible\(driver, By\.CSS_SELECTOR, "\[data-testid=\\"username-input\\"\]"\)/);
+  assert.match(py, /el\.send_keys\("alice"\)/);
+});
+check('selenium: selectOption uses Select', () => {
+  assert.match(py, /Select\(el\)\.select_by_visible_text\("Dark Mode"\)/);
+});
+check('selenium: implicit navigate uses EC.url_to_be', () => {
+  assert.match(py, /EC\.url_to_be\("https:\/\/example\.com\/dashboard"\)/);
+});
+check('selenium: explicit navigate uses driver.get', () => {
+  assert.match(py, /driver\.get\("https:\/\/example\.com\/settings"\)/);
+});
+check('selenium: assertText avoids the text-engine trap (falls back to css candidate)', () => {
+  assert.match(py, /el = wait_visible\(driver, By\.CSS_SELECTOR, "#dashboard > div:nth-of-type\(2\) > span:nth-of-type\(1\)"\)/);
+  assert.match(py, /assert "Welcome, Alice!" in el\.text/);
+});
+
+// ---- JSON suite ----
+const suite = JSON.parse(generators.jsonSuite(session, opts));
+check('json: has name/startUrl/recordedAt/steps', () => {
+  assert.strictEqual(suite.name, 'login flow');
+  assert.strictEqual(suite.startUrl, 'https://example.com/login');
+  assert.ok(Array.isArray(suite.steps));
+});
+check('json: drops implicit navigation, keeps explicit one', () => {
+  const navSteps = suite.steps.filter((s) => s.type === 'navigate');
+  assert.strictEqual(navSteps.length, 1);
+  assert.strictEqual(navSteps[0].url, 'https://example.com/settings');
+});
+check('json: each non-navigate step keeps primary + up to 3 fallbacks', () => {
+  for (const step of suite.steps) {
+    if (step.type === 'navigate') continue;
+    assert.ok(step.primary, `step ${step.type} missing primary`);
+    assert.ok(Array.isArray(step.fallbacks));
+    assert.ok(step.fallbacks.length <= 3);
+  }
+});
+check('json: assertText step promotes non-text candidate to primary', () => {
+  const assertStep = suite.steps.find((s) => s.type === 'assertText');
+  assert.strictEqual(assertStep.primary.engine, 'css');
+  assert.strictEqual(assertStep.text, 'Welcome, Alice!');
+});
+
+console.log('\nAll generator tests passed.');

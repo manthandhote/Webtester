@@ -1,0 +1,95 @@
+{
+  "startUrl": "https://example.com/login",
+  "recordedAt": "2026-01-01T00:00:00.000Z",
+  "actions": [
+    {
+      "type": "fill",
+      "value": "alice",
+      "timestamp": 1700000001000,
+      "selector": {
+        "candidates": [
+          { "score": 100, "engine": "testid", "attr": "data-testid", "value": "username-input", "css": "[data-testid=\"username-input\"]", "xpath": "//*[@data-testid=\"username-input\"]" },
+          { "score": 90, "engine": "id", "value": "username", "css": "#username", "xpath": "//*[@id=\"username\"]" },
+          { "score": 78, "engine": "label", "name": "Username", "css": null, "xpath": "//label[normalize-space(.)=\"Username\"]//input" },
+          { "score": 70, "engine": "placeholder", "value": "Enter your username", "css": "input[placeholder=\"Enter your username\"]", "xpath": "//input[@placeholder=\"Enter your username\"]" },
+          { "score": 65, "engine": "name", "value": "username", "css": "input[name=\"username\"]", "xpath": "//input[@name=\"username\"]" },
+          { "score": 10, "engine": "css", "css": "#login-form > input:nth-of-type(1)", "xpath": null }
+        ]
+      }
+    },
+    {
+      "type": "fill",
+      "value": "hunter2",
+      "timestamp": 1700000002000,
+      "selector": {
+        "candidates": [
+          { "score": 90, "engine": "id", "value": "password", "css": "#password", "xpath": "//*[@id=\"password\"]" },
+          { "score": 78, "engine": "label", "name": "Password", "css": null, "xpath": "//label[normalize-space(.)=\"Password\"]//input" },
+          { "score": 65, "engine": "name", "value": "password", "css": "input[name=\"password\"]", "xpath": "//input[@name=\"password\"]" },
+          { "score": 10, "engine": "css", "css": "#login-form > input:nth-of-type(2)", "xpath": null }
+        ]
+      }
+    },
+    {
+      "type": "check",
+      "timestamp": 1700000003000,
+      "selector": {
+        "candidates": [
+          { "score": 90, "engine": "id", "value": "remember-me", "css": "#remember-me", "xpath": "//*[@id=\"remember-me\"]" },
+          { "score": 78, "engine": "label", "name": "Remember me", "css": null, "xpath": "//label[normalize-space(.)=\"Remember me\"]//input" },
+          { "score": 65, "engine": "name", "value": "remember", "css": "input[name=\"remember\"]", "xpath": "//input[@name=\"remember\"]" },
+          { "score": 10, "engine": "css", "css": "#login-form > input:nth-of-type(3)", "xpath": null }
+        ]
+      }
+    },
+    {
+      "type": "click",
+      "timestamp": 1700000004000,
+      "selector": {
+        "candidates": [
+          { "score": 100, "engine": "testid", "attr": "data-testid", "value": "login-submit", "css": "[data-testid=\"login-submit\"]", "xpath": "//*[@data-testid=\"login-submit\"]" },
+          { "score": 80, "engine": "role", "role": "button", "name": "Log in", "css": "button[aria-label=\"Log in\"]", "xpath": "//button[@aria-label=\"Log in\"]" },
+          { "score": 55, "engine": "text", "value": "Log in", "css": null, "xpath": "//button[normalize-space(.)=\"Log in\"]" },
+          { "score": 10, "engine": "css", "css": "#login-form > button:nth-of-type(1)", "xpath": null }
+        ]
+      }
+    },
+    {
+      "type": "navigate",
+      "url": "https://example.com/dashboard",
+      "implicit": true,
+      "timestamp": 1700000004500
+    },
+    {
+      "type": "selectOption",
+      "value": "dark",
+      "label": "Dark Mode",
+      "timestamp": 1700000005000,
+      "selector": {
+        "candidates": [
+          { "score": 90, "engine": "id", "value": "theme-select", "css": "#theme-select", "xpath": "//*[@id=\"theme-select\"]" },
+          { "score": 78, "engine": "label", "name": "Theme", "css": null, "xpath": "//label[normalize-space(.)=\"Theme\"]//select" },
+          { "score": 65, "engine": "name", "value": "theme", "css": "select[name=\"theme\"]", "xpath": "//select[@name=\"theme\"]" },
+          { "score": 10, "engine": "css", "css": "#dashboard > select:nth-of-type(1)", "xpath": null }
+        ]
+      }
+    },
+    {
+      "type": "navigate",
+      "url": "https://example.com/settings",
+      "implicit": false,
+      "timestamp": 1700000006000
+    },
+    {
+      "type": "assertText",
+      "text": "Welcome, Alice!",
+      "timestamp": 1700000007000,
+      "selector": {
+        "candidates": [
+          { "score": 55, "engine": "text", "value": "Welcome, Alice!", "css": null, "xpath": "//span[normalize-space(.)=\"Welcome, Alice!\"]" },
+          { "score": 10, "engine": "css", "css": "#dashboard > div:nth-of-type(2) > span:nth-of-type(1)", "xpath": null }
+        ]
+      }
+    }
+  ]
+}
