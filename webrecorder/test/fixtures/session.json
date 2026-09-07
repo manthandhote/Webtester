@@ -93,7 +93,7 @@
     },
     {
       "type": "assertTable",
-      "native": true,
+      "kind": "table",
       "headers": ["AWB", "Status"],
       "rows": [
         ["1234567890", "Delivered"],

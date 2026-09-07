@@ -60,6 +60,7 @@ async function main() {
     const testName = args.name || 'recorded session';
     const code = generators[toGeneratorKey(args.format)](session, { testName });
     if (args.out) {
+      fs.mkdirSync(path.dirname(path.resolve(args.out)), { recursive: true });
       fs.writeFileSync(args.out, code);
       console.log(`Wrote ${args.out}`);
     } else {

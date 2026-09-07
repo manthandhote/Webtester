@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Replay fixture</title></head>
+<body>
+  <form id="login-form" onsubmit="event.preventDefault(); location.href = '/results.html';">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" placeholder="Enter your username" />
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" />
+    <label id="remember-label"><input name="remember" type="checkbox" /> Remember me</label>
+    <label for="theme-select">Theme</label>
+    <select id="theme-select" name="theme">
+      <option value="light">Light Mode</option>
+      <option value="dark">Dark Mode</option>
+    </select>
+    <button type="button" onclick="document.getElementById('login-form').requestSubmit()">Save</button>
+    <button type="button">Save as draft</button>
+  </form>
+</body></html>

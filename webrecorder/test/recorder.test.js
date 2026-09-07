@@ -1,113 +1,92 @@
-// Proves navigate detection is generic: it fires on ANY click that's followed by a
-// navigation within the 3s window, not just clicks on <a> links / navbar items.
-// Duplicates recorder.js's context-wiring (same exposeBinding/addInitScript pattern,
-// same attachNavListener logic) so this can drive pages programmatically instead of
-// going through the CLI's full launch/write-file/process lifecycle.
-const http = require('http');
-const path = require('path');
+// End-to-end checks for the REAL recorder.js record() (via its `drive` hook):
+// navigation detection, download ordering/flushing, and output handling.
 const assert = require('assert');
-const { chromium } = require('playwright');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { record } = require('../src/recorder');
+const { serveDir, check } = require('./helpers');
 
-const IMPLICIT_NAV_WINDOW_MS = 3000;
+const NAV_SITE = path.join(__dirname, 'fixtures', 'nav-site');
+const DOWNLOADS_SITE = path.join(__dirname, 'fixtures', 'downloads-site');
 
-const PAGES = {
-  '/index.html': `<html><body>
-    <button id="plain-btn" onclick="location.href='/other.html'">Not a link, just a button</button>
-  </body></html>`,
-  '/spa.html': `<html><body>
-    <button id="spa-btn" onclick="history.pushState({}, '', '/spa-other')">Client-side route change</button>
-  </body></html>`,
-  '/other.html': `<html><body>Other page</body></html>`,
-};
-
-function startServer() {
-  return new Promise((resolve) => {
-    const server = http.createServer((req, res) => {
-      const body = PAGES[req.url];
-      if (!body) {
-        res.writeHead(404);
-        res.end('not found');
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(body);
-    });
-    server.listen(0, '127.0.0.1', () => resolve(server));
-  });
+async function recordWith(startUrl, out, drive) {
+  await record({ url: startUrl, out, headless: true, drive });
+  return JSON.parse(fs.readFileSync(out, 'utf8'));
 }
 
 async function main() {
-  const server = await startServer();
-  const port = server.address().port;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'webrecorder-test-'));
+  const nav = await serveDir(NAV_SITE);
+  const dl = await serveDir(DOWNLOADS_SITE);
 
-  const launchOptions = {};
-  if (process.env.WEBRECORDER_CHROMIUM_PATH) launchOptions.executablePath = process.env.WEBRECORDER_CHROMIUM_PATH;
-  const browser = await chromium.launch(launchOptions);
-  const context = await browser.newContext();
-
-  const actions = [];
-  let lastInteractionTime = 0;
-  let sawFirstPage = false;
-
-  await context.exposeBinding('__wrRecordAction', (_s, action) => {
-    actions.push(action);
-    if (action.type === 'click' || action.type === 'press') lastInteractionTime = Date.now();
-  });
-  await context.exposeBinding('__wrControl', async () => {});
-  await context.addInitScript({ path: path.join(__dirname, '..', 'src', 'injected.js') });
-
-  function attachNavListener(page, isPrimary) {
-    let skippedInitial = !isPrimary;
-    page.on('framenavigated', (frame) => {
-      if (frame !== page.mainFrame()) return;
-      const navUrl = frame.url();
-      if (navUrl === 'about:blank') return;
-      if (!skippedInitial) {
-        skippedInitial = true;
-        return;
-      }
-      const now = Date.now();
-      const implicit = now - lastInteractionTime <= IMPLICIT_NAV_WINDOW_MS;
-      actions.push({ type: 'navigate', url: navUrl, implicit, timestamp: now });
+  let session;
+  await check('record(): creates a missing output directory instead of losing the session at the end', async () => {
+    const out = path.join(tmp, 'nested', 'deeper', 'session.json');
+    session = await recordWith(`${nav.baseUrl}/redirect.html`, out, async (page) => {
+      await page.waitForURL(/index\.html$/);
+      await page.click('#plain-btn');
+      await page.waitForURL(/other\.html$/);
+      await page.click('#back');
+      await page.waitForURL(/index\.html$/);
+      await page.selectOption('#jump', '/other.html');
+      await page.waitForURL(/other\.html$/);
+      await page.click('#back');
+      await page.waitForURL(/index\.html$/);
+      await page.click('#spa-btn');
+      await page.waitForTimeout(100);
     });
-  }
-  context.on('page', (page) => {
-    const isPrimary = !sawFirstPage;
-    sawFirstPage = true;
-    attachNavListener(page, isPrimary);
+    assert.ok(fs.existsSync(out));
+    assert.strictEqual(session.startUrl, `${nav.baseUrl}/redirect.html`);
   });
 
-  const page = await context.newPage();
+  const navs = () => session.actions.filter((a) => a.type === 'navigate');
+  await check('record(): the start URL redirect is not recorded as a step (goto(startUrl) reproduces it)', async () => {
+    assert.ok(!navs().some((n) => n.url.endsWith('/index.html') && session.actions.indexOf(n) === 0));
+    assert.notStrictEqual(session.actions[0].type, 'navigate');
+  });
+  await check('record(): a plain <button onclick> navigation is an implicit navigate', async () => {
+    const n = navs()[0];
+    assert.ok(n.url.endsWith('/other.html'));
+    assert.strictEqual(n.implicit, true);
+    assert.strictEqual(session.actions[session.actions.indexOf(n) - 1].type, 'click');
+  });
+  await check('record(): a <select> jump-menu navigation counts as implicit too', async () => {
+    const idx = session.actions.findIndex((a) => a.type === 'selectOption');
+    assert.ok(idx > 0);
+    const after = session.actions[idx + 1];
+    assert.strictEqual(after.type, 'navigate');
+    assert.strictEqual(after.implicit, true);
+    assert.ok(after.url.endsWith('/other.html'));
+  });
+  await check('record(): a pushState route change is an implicit navigate', async () => {
+    const last = navs().pop();
+    assert.ok(last.url.endsWith('/spa-other'), last.url);
+    assert.strictEqual(last.implicit, true);
+  });
 
-  // --- a plain <button onclick> full navigation, not an <a> link ---
-  await page.goto(`http://127.0.0.1:${port}/index.html`);
-  await page.waitForTimeout(150);
-  await page.click('#plain-btn');
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(100);
+  await check('record(): download actions keep their place after the triggering click and are fully parsed even when finishing immediately', async () => {
+    const out = path.join(tmp, 'dl', 'session.json');
+    const s = await recordWith(`${dl.baseUrl}/downloads.html`, out, async (page) => {
+      await page.click('#download-csv');
+      await page.click('#download-xlsx'); // immediately — no waiting for the first download to finish
+      // drive returns right away: finishRecording must wait for both downloads to be saved + parsed
+    });
+    const t = s.actions.map((a) => a.type);
+    assert.deepStrictEqual(t, ['click', 'download', 'click', 'download'], `order was ${t}`);
+    for (const d of s.actions.filter((a) => a.type === 'download')) {
+      assert.deepStrictEqual(d.headers, ['AWB', 'Status', 'Weight'], JSON.stringify(d));
+      assert.strictEqual(d.rows.length, 2);
+      assert.ok(d.savedPath && fs.existsSync(path.join(path.dirname(out), d.savedPath)), `missing ${d.savedPath}`);
+    }
+    assert.strictEqual(s.actions[1].suggestedFilename, 'shipments-report.csv');
+    assert.strictEqual(s.actions[3].suggestedFilename, 'shipments-report.xlsx');
+  });
 
-  const navAfterButton = actions.filter((a) => a.type === 'navigate').pop();
-  assert.ok(navAfterButton, 'expected a navigate action after clicking the plain button');
-  assert.strictEqual(navAfterButton.implicit, true);
-  assert.ok(navAfterButton.url.endsWith('/other.html'), `expected navigation to /other.html, got ${navAfterButton.url}`);
-  console.log('ok - clicking a plain <button> (not a link) that navigates is detected as an implicit navigate');
-
-  // --- a client-side route change (history.pushState), no full page reload ---
-  actions.length = 0;
-  await page.goto(`http://127.0.0.1:${port}/spa.html`);
-  await page.waitForTimeout(150);
-  await page.click('#spa-btn');
-  await page.waitForTimeout(100);
-
-  const navAfterSpa = actions.filter((a) => a.type === 'navigate').pop();
-  assert.ok(navAfterSpa, 'expected a navigate action after a pushState route change');
-  assert.strictEqual(navAfterSpa.implicit, true);
-  assert.ok(navAfterSpa.url.endsWith('/spa-other'), `expected navigation to /spa-other, got ${navAfterSpa.url}`);
-  console.log('ok - a button-triggered client-side route change (pushState) is also detected as an implicit navigate');
-
-  await browser.close();
-  server.close();
-  console.log('\nAll recorder navigate-detection tests passed.');
+  nav.server.close();
+  dl.server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log('\nAll recorder tests passed.');
 }
 
 main().catch((err) => {

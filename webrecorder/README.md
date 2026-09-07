@@ -45,27 +45,43 @@ the bottom-right corner. Interact with the page normally:
 - Navigations caused by your interactions are detected automatically and
   marked `implicit`, with a check for the resulting URL generated for
   free (`toHaveURL` in Playwright, `EC.url_to_be` in Selenium). This is
-  generic — it fires on *any* click or key press followed by a
-  navigation within 3 seconds, not just navbar links. A `<button
-  onclick="...">` that redirects, a form submit, or a client-side route
-  change (`history.pushState`) are all caught the same way as a plain
-  `<a href>`.
+  generic — it fires on *any* click, key press, checkbox toggle or
+  `<select>` change followed by a navigation within 3 seconds, not just
+  navbar links. A `<button onclick="...">` that redirects, a form submit,
+  a jump-menu, or a client-side route change (`history.pushState`) are
+  all caught the same way as a plain `<a href>`. Redirects that happen
+  while the start URL is loading are not recorded — the generated test's
+  own `goto(startUrl)` reproduces them.
+- Only *trusted* (user-initiated) clicks are recorded. Clicks the page's
+  JavaScript dispatches itself — an "Upload" button calling
+  `hiddenInput.click()`, a throwaway `<a>` clicked to start a download —
+  are side effects of what you already did, and replaying them would
+  fail (the element is hidden or gone).
+- Clicking a `<label>` for a checkbox/radio records a single
+  `check`/`uncheck` on the control, not a click plus a check.
 
 **Assert mode** — press `F8` or click "Assert" in the panel to toggle it.
 While on, clicks don't perform the click — they record an assertion
 instead:
 
 - `Alt`+click a field → assert its value
-- `Ctrl`+click any cell/row inside a table (or a table-like container) →
-  assert the **whole table's contents**. This walks the nearest `<table>`
-  (or, if there isn't one, the clicked container's direct children as
-  rows/columns), records every row's cell text, and ties it to the
-  table's own selector. Use this for things like an AWB search result
-  grid: type the barcode, click Search, wait for the results to render,
-  then `Ctrl`+click a cell in the table to snapshot the whole result set
-  into the test.
-- click an element with text → assert its text
+- `Ctrl`+click any cell/row inside a table → assert the **whole table's
+  contents**. Works for a real `<table>` (rows from its own `<tbody>`,
+  nested tables excluded, headers from `<thead>` or a leading `<th>`
+  row), an ARIA grid (`role="grid"`/`"table"` with `role="row"` and
+  `columnheader`/`gridcell` children — what most React data grids
+  render), or a plain div grid (an ancestor whose same-tag children are
+  rows containing cells). Every row's rendered cell text is recorded and
+  tied to the table's own selector. Use this for things like an AWB
+  search result grid: type the barcode, click Search, wait for the
+  results to render, then `Ctrl`+click a cell in the table to snapshot
+  the whole result set into the test.
+- click an element with text → assert its rendered text (`innerText`,
+  so hidden helper text doesn't leak into the expectation)
 - click anything else → assert it's visible
+
+While assert mode is on, typing, key presses and `<select>` changes are
+not recorded either — you're inspecting, not acting.
 
 Click **Finish** in the panel (or press Ctrl+C in the terminal) to stop
 recording and write `session.json`.
@@ -77,9 +93,15 @@ and if it's a `.csv` or `.xlsx` file, its headers and every row are
 parsed and recorded too. See **Verifying downloaded reports** below for
 what that turns into in each output format.
 
-Pass `--headless` to run without a visible browser window (useful in CI
-or headless environments — you'll need to drive interactions
-programmatically in that case, since there's no window to click in).
+Pass `--headless` to run without a visible browser window. For scripted
+or CI recordings, `record()` from `src/recorder.js` also accepts a
+`drive(page)` callback: it's called with the Playwright page after the
+start URL loads, and the recording finishes when it resolves — see
+`test/recorder.test.js` for an example.
+
+The output directory is created up front, and `session.json` is written
+only after in-flight downloads have been saved and parsed, so a
+recording can't be lost at the very end.
 
 ### 2. Generate a test
 
@@ -106,11 +128,18 @@ associated label, placeholder, name attribute, exact text, and a
 `nth-of-type` CSS path as a last resort). Each candidate is verified for
 uniqueness in the live DOM at record time; non-unique candidates are
 scored down. The generators pick the best candidate for each target
-format — native Playwright locators (`getByTestId`, `getByRole`, etc.)
-for the Playwright output, and a CSS-or-XPath locator for Selenium (which
-has no role/label locators). The JSON suite keeps the full ranked
-candidate chain (`primary` + up to 3 `fallbacks`) per step, intended as
-input to a future self-healing selector resolver.
+format — native Playwright locators (`getByTestId`, `getByRole`, etc.,
+always with `exact: true`, since the candidate was verified unique by
+exact match and a substring match would turn "Save" into a strict-mode
+violation next to "Save as draft") for the Playwright output, and a
+CSS-or-XPath locator for Selenium (which has no role/label locators).
+Every candidate carries a concrete CSS or XPath that resolves to exactly
+that element — a label is resolved through its `for=` attribute
+(`//input[@id=//label[...]/@for]`), a role's name through whichever
+attribute it actually came from. Elements inside an open shadow root are
+checked for uniqueness within that root. The JSON suite keeps the full
+ranked candidate chain (`primary` + up to 3 `fallbacks`) per step,
+intended as input to a future self-healing selector resolver.
 
 IDs that look auto-generated (React's `:r0:`-style ids, long hex
 fragments, or ids prefixed by common component libraries like `mui-`,
@@ -159,9 +188,11 @@ webrecorder/
   src/recorder.js        # launches the browser, collects the action stream, writes session.json
   src/injected.js         # runs IN the recorded page: selector engine + event capture + overlay panel
   src/generators.js      # session.json -> Playwright / Selenium / JSON test code
+  src/tabular.js         # CSV parsing + cell stringification shared by the recorder and
+                          # (emitted verbatim into) generated Playwright tests
   test/                  # fixture session.json + generator tests (no browser needed),
-                          # headless behavioral tests for injected.js/recorder.js/downloads
-                          # (needs Chromium)
+                          # headless behavioral tests for injected.js/recorder.js/downloads,
+                          # and a full record -> generate -> replay test (needs Chromium)
 ```
 
 `session.json` is the stable contract between recording and generation —
@@ -170,8 +201,18 @@ the generators never touch a browser.
 ## Running the tests
 
 ```sh
-node test/generators.test.js   # generator output sanity checks, no browser
-node test/injected.test.js     # behavioral checks against a real headless Chromium
-node test/recorder.test.js     # navigate-detection checks against a real headless Chromium
-node test/downloads.test.js    # real CSV/XLSX download capture + parsing, against a real headless Chromium
+npm run test:unit      # generator + parser checks, no browser
+npm run test:browser   # everything below, needs Chromium
+npm test               # both
+
+node test/generators.test.js   # generator output checks for all three formats
+node test/injected.test.js     # capture + selector-engine behavior in a real headless Chromium
+node test/recorder.test.js     # the real record(): navigation detection, download ordering, output handling
+node test/downloads.test.js    # real CSV/XLSX download capture + parsing
+node test/replay.test.js       # record a flow, generate the Playwright spec, run it with @playwright/test
 ```
+
+`replay.test.js` needs a directory with `@playwright/test` and `exceljs`
+installed, passed as `REPLAY_PROJECT_DIR`; it skips when that's unset.
+If Playwright's bundled browser isn't available, point
+`WEBRECORDER_CHROMIUM_PATH` at a Chromium binary.

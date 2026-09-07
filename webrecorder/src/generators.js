@@ -1,9 +1,12 @@
 // session.json -> test code strings. Must never touch a browser.
+const { parseCsvRows, cellToString } = require('./tabular');
 
 function jsStr(v) {
   return JSON.stringify(v == null ? '' : v);
 }
 
+// JSON string/array literals are also valid Python literals for the values we
+// emit (strings and lists of strings only).
 function pyStr(v) {
   return JSON.stringify(v == null ? '' : v);
 }
@@ -13,7 +16,8 @@ function topCandidate(selector) {
 }
 
 // The text engine's assertion would just check the text against itself.
-// Reorder so the highest-ranked non-text candidate leads.
+// Reorder so the highest-ranked non-text candidate leads. Only for assertText:
+// for a click, a text selector is a perfectly good primary.
 function orderedCandidatesForAssertion(selector) {
   const candidates = selector.candidates;
   if (candidates[0].engine !== 'text') return candidates;
@@ -22,20 +26,47 @@ function orderedCandidatesForAssertion(selector) {
   return [nonText, ...candidates.filter((c) => c !== nonText)];
 }
 
-// A `download` action must be paired with the click that triggered it (the
-// listener needs to be armed before the click fires). Naively pairing with
-// "whatever click immediately precedes the download" breaks on the common
-// vanilla-JS download pattern — create a hidden <a>, click it, remove it —
-// because that synthesizes a SECOND click event (on a throwaway element with
-// no stable selector) a few milliseconds after the real button click. So
-// instead: walk back through a burst of clicks that all land within
-// BURST_WINDOW_MS of each other immediately before the download, treat the
-// EARLIEST one as the real trigger (what the user actually clicked), and
-// drop the rest of the burst entirely — they're synthetic side effects, not
-// separate user actions. This is computed as one up-front pass, before any
-// code is emitted, since deciding it while iterating forward would be too
-// late (the synthetic click's line would already have been emitted).
+function candidatesFor(action) {
+  return action.type === 'assertText' ? orderedCandidatesForAssertion(action.selector) : action.selector.candidates;
+}
+
+// Sessions recorded before `kind` existed carry a boolean `native`.
+function tableKind(action) {
+  if (action.kind) return action.kind;
+  return action.native ? 'table' : 'children';
+}
+
+function tableSelectors(action) {
+  switch (tableKind(action)) {
+    case 'table':
+      return {
+        rowSel: action.headerRowInBody ? ':scope > tbody > tr:nth-child(n+2)' : ':scope > tbody > tr',
+        cellSel: ':scope > td, :scope > th',
+      };
+    case 'aria':
+      return {
+        rowSel: '[role="row"]:not(:has([role="columnheader"]))',
+        cellSel: '[role="cell"], [role="gridcell"], [role="rowheader"]',
+      };
+    default:
+      return { rowSel: ':scope > *', cellSel: ':scope > *' };
+  }
+}
+
+// A `download` action must be paired with the click (or key press) that
+// triggered it: the listener has to be armed before the trigger fires, or the
+// event can be missed. Computed as one up-front pass, before any code is
+// emitted — deciding it while iterating forward would be too late, since the
+// trigger's own line would already have been emitted.
+//
+// Clicks within BURST_WINDOW_MS of each other immediately before a download
+// are treated as one burst and the EARLIEST is the trigger: a common download
+// idiom creates a hidden <a>, clicks it, and removes it, which used to record
+// a second click on an element that no longer exists on replay. (injected.js
+// now drops untrusted clicks at the source; this stays as defense in depth
+// and for sessions recorded before that.)
 const BURST_WINDOW_MS = 50;
+const TRIGGER_TYPES = new Set(['click', 'press']);
 
 function computeDownloadPairing(actions) {
   const consumed = new Set();
@@ -44,18 +75,13 @@ function computeDownloadPairing(actions) {
   actions.forEach((action, index) => {
     if (action.type !== 'download') return;
     const prev = actions[index - 1];
-    if (!prev || prev.type !== 'click' || consumed.has(index - 1)) {
+    if (!prev || !TRIGGER_TYPES.has(prev.type) || consumed.has(index - 1)) {
       triggerIndexByDownloadIndex.set(index, null);
       return;
     }
-    // The click immediately before a download always pairs with it, no matter
-    // how long the download itself took to fire (that gap is unbounded — real
-    // downloads take real time). The burst window only applies going further
-    // back, between one click and the next: that's what catches a synthetic
-    // click fired milliseconds after the real one.
     let earliestInBurst = index - 1;
     let cursor = index - 2;
-    while (cursor >= 0 && actions[cursor].type === 'click' && !consumed.has(cursor)) {
+    while (prev.type === 'click' && cursor >= 0 && actions[cursor].type === 'click' && !consumed.has(cursor)) {
       if (actions[cursor + 1].timestamp - actions[cursor].timestamp > BURST_WINDOW_MS) break;
       earliestInBurst = cursor;
       cursor--;
@@ -69,26 +95,31 @@ function computeDownloadPairing(actions) {
 
 // ---------------- Playwright ----------------
 
+// exact: true everywhere a name/label/placeholder is matched. The recorded
+// candidate was verified unique by exact match; Playwright's default substring
+// match would turn "Save" into a strict-mode violation next to "Save as draft".
 function playwrightLocator(candidate) {
   switch (candidate.engine) {
     case 'testid':
       if (candidate.attr === 'data-testid') return `page.getByTestId(${jsStr(candidate.value)})`;
       return `page.locator(${jsStr(candidate.css)})`;
     case 'role':
-      return `page.getByRole(${jsStr(candidate.role)}, { name: ${jsStr(candidate.name)} })`;
+      return `page.getByRole(${jsStr(candidate.role)}, { name: ${jsStr(candidate.name)}, exact: true })`;
     case 'label':
-      return `page.getByLabel(${jsStr(candidate.name)})`;
+      return `page.getByLabel(${jsStr(candidate.name)}, { exact: true })`;
     case 'placeholder':
-      return `page.getByPlaceholder(${jsStr(candidate.value)})`;
+      return `page.getByPlaceholder(${jsStr(candidate.value)}, { exact: true })`;
     case 'text':
       return `page.getByText(${jsStr(candidate.value)}, { exact: true })`;
-    case 'id':
-    case 'name':
-    case 'css':
     default:
       if (candidate.css) return `page.locator(${jsStr(candidate.css)})`;
       return `page.locator(${jsStr('xpath=' + candidate.xpath)})`;
   }
+}
+
+function playwrightTrigger(action) {
+  const loc = playwrightLocator(topCandidate(action.selector));
+  return action.type === 'press' ? `${loc}.press(${jsStr(action.key)})` : `${loc}.click()`;
 }
 
 function playwrightStep(action, index) {
@@ -108,31 +139,35 @@ function playwrightStep(action, index) {
     case 'fill':
       return [`${i}await ${loc()}.fill(${jsStr(action.value)});`];
     case 'selectOption':
-      return [`${i}await ${loc()}.selectOption({ label: ${jsStr(action.label)} });`];
+      return action.label
+        ? [`${i}await ${loc()}.selectOption({ label: ${jsStr(action.label)} });`]
+        : [`${i}await ${loc()}.selectOption(${jsStr(action.value)});`];
     case 'setInputFiles':
-      return [`${i}await ${loc()}.setInputFiles([${action.files.map(jsStr).join(', ')}]);`];
+      return [
+        `${i}// files are basenames as recorded; point these at real paths before running`,
+        `${i}await ${loc()}.setInputFiles([${action.files.map(jsStr).join(', ')}]);`,
+      ];
     case 'press':
       return [`${i}await ${loc()}.press(${jsStr(action.key)});`];
     case 'assertValue':
       return [`${i}await expect(${loc()}).toHaveValue(${jsStr(action.value)});`];
     case 'assertText': {
       const candidate = orderedCandidatesForAssertion(action.selector)[0];
-      return [`${i}await expect(${playwrightLocator(candidate)}).toContainText(${jsStr(action.text)});`];
+      return [`${i}await expect(${playwrightLocator(candidate)}).toContainText(${jsStr(action.text)}, { useInnerText: true });`];
     }
     case 'assertVisible':
       return [`${i}await expect(${loc()}).toBeVisible();`];
     case 'assertTable': {
-      const rowSel = action.native ? 'tbody tr' : ':scope > *';
-      const cellSel = action.native ? 'td, th' : ':scope > *';
-      const varName = `tableRows${index}`;
+      const { rowSel, cellSel } = tableSelectors(action);
+      const rowsVar = `tableRows${index}`;
+      const tableVar = `table${index}`;
       return [
-        `${i}const ${varName} = ${jsStr(action.rows)};`,
-        `${i}await expect(${loc()}.locator(${jsStr(rowSel)})).toHaveCount(${varName}.length);`,
-        `${i}for (let r = 0; r < ${varName}.length; r++) {`,
-        `${i}  const cells = await ${loc()}.locator(${jsStr(rowSel)}).nth(r).locator(${jsStr(cellSel)}).allTextContents();`,
-        `${i}  for (let c = 0; c < ${varName}[r].length; c++) {`,
-        `${i}    expect(cells[c].trim()).toBe(${varName}[r][c]);`,
-        `${i}  }`,
+        `${i}const ${rowsVar} = ${jsStr(action.rows)};`,
+        `${i}const ${tableVar} = ${loc()};`,
+        `${i}await expect(${tableVar}.locator(${jsStr(rowSel)})).toHaveCount(${rowsVar}.length);`,
+        `${i}for (let r = 0; r < ${rowsVar}.length; r++) {`,
+        `${i}  const cells = await ${tableVar}.locator(${jsStr(rowSel)}).nth(r).locator(${jsStr(cellSel)}).allInnerTexts();`,
+        `${i}  expect(cells.map((c) => c.replace(/\\s+/g, ' ').trim())).toEqual(${rowsVar}[r]);`,
         `${i}}`,
       ];
     }
@@ -141,31 +176,12 @@ function playwrightStep(action, index) {
   }
 }
 
-// Downloads must be paired with the click that triggers them via Promise.all,
-// so the listener is armed before the click fires (otherwise the event can
-// be missed). The helper below is only emitted when a download step actually
-// captured file contents to verify.
+// Emitted verbatim from tabular.js so the generated test parses a download
+// exactly the way the recorder did.
 const READ_TABULAR_DOWNLOAD_HELPER = [
-  'function parseCsvText(text) {',
-  '  const rows = [];',
-  '  let row = [];',
-  "  let field = '';",
-  '  let inQuotes = false;',
-  '  for (let i = 0; i < text.length; i++) {',
-  '    const c = text[i];',
-  '    if (inQuotes) {',
-  "      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else { inQuotes = false; } }",
-  '      else field += c;',
-  "    } else if (c === '\"') inQuotes = true;",
-  "    else if (c === ',') { row.push(field); field = ''; }",
-  "    else if (c === '\\n') { row.push(field); field = ''; rows.push(row); row = []; }",
-  "    else if (c === '\\r') { /* skip */ }",
-  '    else field += c;',
-  '  }',
-  '  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }',
-  "  if (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') rows.pop();",
-  '  return rows;',
-  '}',
+  parseCsvRows.toString(),
+  '',
+  cellToString.toString(),
   '',
   'async function readTabularDownload(download) {',
   '  const filePath = await download.path();',
@@ -177,24 +193,22 @@ const READ_TABULAR_DOWNLOAD_HELPER = [
   '    const worksheet = workbook.worksheets[0];',
   '    const grid = [];',
   '    worksheet.eachRow((row) => {',
-  "      grid.push(row.values.slice(1).map((v) => (v == null ? '' : String(v))));",
+  '      grid.push(row.values.slice(1).map(cellToString));',
   '    });',
   '    return { headers: grid[0] || [], rows: grid.slice(1) };',
   '  }',
-  "  const fs = require('fs');",
-  "  const grid = parseCsvText(fs.readFileSync(filePath, 'utf8'));",
+  "  const grid = parseCsvRows(require('fs').readFileSync(filePath, 'utf8'));",
   '  return { headers: grid[0] || [], rows: grid.slice(1) };',
   '}',
 ];
 
-function playwrightDownloadStep(action, clickAction, index) {
+function playwrightDownloadStep(action, triggerAction, index) {
   const i = '  ';
-  const clickLoc = playwrightLocator(topCandidate(clickAction.selector));
   const dlVar = `download${index}`;
   const lines = [
     `${i}const [${dlVar}] = await Promise.all([`,
     `${i}  page.waitForEvent('download'),`,
-    `${i}  ${clickLoc}.click(),`,
+    `${i}  ${playwrightTrigger(triggerAction)},`,
     `${i}]);`,
     `${i}expect(${dlVar}.suggestedFilename()).toBe(${jsStr(action.suggestedFilename)});`,
   ];
@@ -226,7 +240,7 @@ function playwright(session, { testName } = {}) {
     if (consumed.has(index)) return;
     if (action.type === 'download') {
       const triggerIndex = triggerIndexByDownloadIndex.get(index);
-      if (triggerIndex !== null && triggerIndex !== undefined) {
+      if (triggerIndex != null) {
         lines.push(...playwrightDownloadStep(action, actions[triggerIndex], index));
         return;
       }
@@ -251,6 +265,10 @@ const KEY_TO_SELENIUM = {
   ArrowUp: 'ARROW_UP',
   ArrowDown: 'ARROW_DOWN',
 };
+
+function seleniumKey(key) {
+  return `Keys.${KEY_TO_SELENIUM[key] || key.toUpperCase()}`;
+}
 
 function seleniumBy(candidates) {
   const withCss = candidates.find((c) => c.css);
@@ -281,9 +299,7 @@ function seleniumStep(action, index) {
     return lines;
   }
 
-  const { by, value } = seleniumBy(
-    action.type === 'assertText' ? orderedCandidatesForAssertion(action.selector) : action.selector.candidates
-  );
+  const { by, value } = seleniumBy(candidatesFor(action));
 
   switch (action.type) {
     case 'click':
@@ -320,7 +336,7 @@ function seleniumStep(action, index) {
       break;
     case 'press':
       lines.push(`${i}el = wait_visible(driver, ${by}, ${pyStr(value)})`);
-      lines.push(`${i}el.send_keys(Keys.${KEY_TO_SELENIUM[action.key] || action.key.toUpperCase()})`);
+      lines.push(`${i}el.send_keys(${seleniumKey(action.key)})`);
       break;
     case 'assertValue':
       lines.push(`${i}el = wait_visible(driver, ${by}, ${pyStr(value)})`);
@@ -328,22 +344,21 @@ function seleniumStep(action, index) {
       break;
     case 'assertText':
       lines.push(`${i}el = wait_visible(driver, ${by}, ${pyStr(value)})`);
-      lines.push(`${i}assert ${pyStr(action.text)} in el.text`);
+      lines.push(`${i}assert ${pyStr(action.text)} in " ".join(el.text.split())`);
       break;
     case 'assertVisible':
       lines.push(`${i}el = wait_visible(driver, ${by}, ${pyStr(value)})`);
       lines.push(`${i}assert el.is_displayed()`);
       break;
     case 'assertTable': {
-      const rowSel = action.native ? 'tbody tr' : ':scope > *';
-      const cellSel = action.native ? 'td, th' : ':scope > *';
+      const { rowSel, cellSel } = tableSelectors(action);
       lines.push(`${i}table_el_${index} = wait_visible(driver, ${by}, ${pyStr(value)})`);
       lines.push(`${i}expected_rows_${index} = ${pyStr(action.rows)}`);
       lines.push(`${i}row_elements_${index} = table_el_${index}.find_elements(By.CSS_SELECTOR, ${pyStr(rowSel)})`);
       lines.push(`${i}assert len(row_elements_${index}) == len(expected_rows_${index})`);
       lines.push(`${i}for r, row_el in enumerate(row_elements_${index}):`);
       lines.push(`${i}    cells = row_el.find_elements(By.CSS_SELECTOR, ${pyStr(cellSel)})`);
-      lines.push(`${i}    cell_texts = [c.text.strip() for c in cells]`);
+      lines.push(`${i}    cell_texts = [" ".join(c.text.split()) for c in cells]`);
       lines.push(`${i}    assert cell_texts == expected_rows_${index}[r]`);
       break;
     }
@@ -353,13 +368,13 @@ function seleniumStep(action, index) {
   return lines;
 }
 
-function seleniumDownloadStep(action, clickAction, index) {
+function seleniumDownloadStep(action, triggerAction, index) {
   const i = '    ';
-  const { by, value } = seleniumBy(clickAction.selector.candidates);
+  const { by, value } = seleniumBy(triggerAction.selector.candidates);
   const lines = [
     `${i}before_files_${index} = set(os.listdir(driver.download_dir))`,
     `${i}el = wait_visible(driver, ${by}, ${pyStr(value)})`,
-    `${i}el.click()`,
+    triggerAction.type === 'press' ? `${i}el.send_keys(${seleniumKey(triggerAction.key)})` : `${i}el.click()`,
     `${i}downloaded_path_${index} = wait_for_new_file(driver.download_dir, before_files_${index})`,
     `${i}assert os.path.basename(downloaded_path_${index}) == ${pyStr(action.suggestedFilename)}`,
   ];
@@ -371,6 +386,42 @@ function seleniumDownloadStep(action, clickAction, index) {
   return lines;
 }
 
+const SELENIUM_DOWNLOAD_HELPERS = [
+  'def wait_for_new_file(directory, before_files, timeout=10):',
+  '    end = time.time() + timeout',
+  '    while time.time() < end:',
+  '        new_files = set(os.listdir(directory)) - before_files',
+  '        new_files = {f for f in new_files if not f.endswith((".crdownload", ".tmp"))}',
+  '        if new_files:',
+  '            return os.path.join(directory, new_files.pop())',
+  '        time.sleep(0.2)',
+  '    raise TimeoutError(f"No new file appeared in {directory}")',
+  '',
+  '',
+  '# Cell stringification mirrors the recorder: None -> "", datetimes -> ISO-8601 with',
+  '# millisecond precision and a Z suffix (what exceljs/JS Date produce), else str().',
+  'def _cell_to_str(v):',
+  '    if v is None:',
+  '        return ""',
+  '    if isinstance(v, datetime.datetime):',
+  '        return v.isoformat(timespec="milliseconds") + "Z"',
+  '    return str(v)',
+  '',
+  '',
+  'def read_tabular_file(path):',
+  '    if path.lower().endswith((".xlsx", ".xls")):',
+  '        import openpyxl  # pip install openpyxl to use this',
+  '        wb = openpyxl.load_workbook(path, data_only=True)',
+  '        sheet = wb[wb.sheetnames[0]]',
+  '        grid = [[_cell_to_str(c.value) for c in row] for row in sheet.iter_rows()]',
+  '    else:',
+  '        with open(path, newline="", encoding="utf-8-sig") as f:',
+  '            grid = list(csv.reader(f))',
+  '    headers = grid[0] if grid else []',
+  '    rows = grid[1:]',
+  '    return {"headers": headers, "rows": rows}',
+];
+
 function seleniumPython(session, { testName } = {}) {
   const actions = session.actions;
   const hasDownload = actions.some((a) => a.type === 'download');
@@ -381,6 +432,7 @@ function seleniumPython(session, { testName } = {}) {
     lines.push('import os');
     lines.push('import time');
     lines.push('import csv');
+    lines.push('import datetime');
     lines.push('import tempfile');
   }
   lines.push('from selenium import webdriver');
@@ -416,29 +468,7 @@ function seleniumPython(session, { testName } = {}) {
   lines.push('');
   lines.push('');
   if (hasDownload) {
-    lines.push('def wait_for_new_file(directory, before_files, timeout=10):');
-    lines.push('    end = time.time() + timeout');
-    lines.push('    while time.time() < end:');
-    lines.push('        new_files = set(os.listdir(directory)) - before_files');
-    lines.push('        new_files = {f for f in new_files if not f.endswith(".crdownload")}');
-    lines.push('        if new_files:');
-    lines.push('            return os.path.join(directory, new_files.pop())');
-    lines.push('        time.sleep(0.2)');
-    lines.push('    raise TimeoutError(f"No new file appeared in {directory}")');
-    lines.push('');
-    lines.push('');
-    lines.push('def read_tabular_file(path):');
-    lines.push('    if path.lower().endswith((".xlsx", ".xls")):');
-    lines.push('        import openpyxl  # pip install openpyxl to use this');
-    lines.push('        wb = openpyxl.load_workbook(path, data_only=True)');
-    lines.push('        sheet = wb[wb.sheetnames[0]]');
-    lines.push('        grid = [[("" if c.value is None else str(c.value)) for c in row] for row in sheet.iter_rows()]');
-    lines.push('    else:');
-    lines.push('        with open(path, newline="", encoding="utf-8") as f:');
-    lines.push('            grid = list(csv.reader(f))');
-    lines.push('    headers = grid[0] if grid else []');
-    lines.push('    rows = grid[1:]');
-    lines.push('    return {"headers": headers, "rows": rows}');
+    lines.push(...SELENIUM_DOWNLOAD_HELPERS);
     lines.push('');
     lines.push('');
   }
@@ -450,11 +480,11 @@ function seleniumPython(session, { testName } = {}) {
     if (consumed.has(index)) return;
     if (action.type === 'download') {
       const triggerIndex = triggerIndexByDownloadIndex.get(index);
-      if (triggerIndex !== null && triggerIndex !== undefined) {
+      if (triggerIndex != null) {
         lines.push(...seleniumDownloadStep(action, actions[triggerIndex], index));
         return;
       }
-      lines.push(`    # download with no preceding click to pair it with; skipping`);
+      lines.push(`    # download with no preceding click/press to pair it with; skipping`);
       return;
     }
     lines.push(...seleniumStep(action, index));
@@ -466,11 +496,19 @@ function seleniumPython(session, { testName } = {}) {
 // ---------------- JSON suite ----------------
 
 function keyRowsByHeader(headers, rows) {
+  const keys = [];
+  const seen = new Set();
+  const width = Math.max(headers ? headers.length : 0, ...rows.map((r) => r.length), 0);
+  for (let c = 0; c < width; c++) {
+    let key = (headers && headers[c]) || `col_${c}`;
+    if (seen.has(key)) key = `${key}_${c}`;
+    seen.add(key);
+    keys.push(key);
+  }
   return rows.map((row) => {
     const keyed = {};
-    row.forEach((cellValue, colIndex) => {
-      const key = (headers && headers[colIndex]) || `col_${colIndex}`;
-      keyed[key] = cellValue;
+    row.forEach((cellValue, c) => {
+      keyed[keys[c]] = cellValue;
     });
     return keyed;
   });
@@ -489,7 +527,7 @@ function toStep(action) {
     return step;
   }
 
-  const candidates = orderedCandidatesForAssertion(action.selector);
+  const candidates = candidatesFor(action);
   const step = {
     type: action.type,
     primary: candidates[0],
@@ -505,18 +543,21 @@ function toStep(action) {
   if (action.type === 'press') step.key = action.key;
   if (action.type === 'assertValue') step.value = action.value;
   if (action.type === 'assertText') step.text = action.text;
-  if (action.type === 'assertTable') step.rows = keyRowsByHeader(action.headers, action.rows);
+  if (action.type === 'assertTable') {
+    step.kind = tableKind(action);
+    step.headers = action.headers;
+    step.rows = keyRowsByHeader(action.headers, action.rows);
+  }
 
   return step;
 }
 
 function jsonSuite(session, { testName } = {}) {
-  const steps = session.actions.map(toStep);
   const suite = {
     name: testName || 'recorded session',
     startUrl: session.startUrl,
     recordedAt: session.recordedAt,
-    steps,
+    steps: session.actions.map(toStep),
   };
   return JSON.stringify(suite, null, 2) + '\n';
 }

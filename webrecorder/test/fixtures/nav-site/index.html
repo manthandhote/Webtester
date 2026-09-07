@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Nav</title></head>
+<body>
+  <button id="plain-btn" onclick="location.href='/other.html'">Not a link, just a button</button>
+  <button id="spa-btn" onclick="history.pushState({}, '', '/spa-other')">Client-side route change</button>
+  <select id="jump" onchange="location.href = this.value">
+    <option value="">Jump to…</option>
+    <option value="/other.html">Other page</option>
+  </select>
+  <button id="noop">Does nothing</button>
+</body></html>
